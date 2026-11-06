@@ -6,6 +6,7 @@
 #include "SpudState.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "Tickable.h"
+#include "Containers/Ticker.h"
 #include "Engine/World.h"
 #include "Engine/GameInstance.h"
 
@@ -156,6 +157,11 @@ public:
 	UPROPERTY(BlueprintReadWrite, Config, Category="SPUD")
 	int32 ScreenshotHeight = 135;
 
+	/// Fail instead of saving without a new thumbnail when a requested screenshot cannot be captured/encoded.
+	/// Disabled by default for compatibility; games may make screenshots part of their save contract.
+	UPROPERTY(BlueprintReadWrite, Config, Category="SPUD")
+	bool bFailSaveIfScreenshotUnavailable = false;
+
 	/// Maximum number of numbered quick save slots to keep. 0 = single reusable slot (legacy behavior).
 	UPROPERTY(BlueprintReadWrite, Config)
 	int32 MaxQuickSaves = 0;
@@ -189,6 +195,14 @@ protected:
 	FTimerHandle StreamLevelUnloadTimerHandle;
 	FString SlotNameInProgress;
 	FText TitleInProgress;
+	FDelegateHandle ScreenshotCaptureHandle;
+	FDelegateHandle HDRScreenshotCaptureHandle;
+	FDelegateHandle ScreenshotProcessedHandle;
+	FTSTicker::FDelegateHandle ScreenshotTimeout;
+	bool bAwaitingScreenshot = false;
+	TWeakObjectPtr<UWorld> ScreenshotWorldInProgress;
+	void ClearScreenshotCapture();
+	void ScreenshotCaptureFailed(int32 UserIndex);
 	UPROPERTY()
 	TObjectPtr<const USpudCustomSaveInfo> ExtraInfoInProgress;
 

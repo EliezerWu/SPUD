@@ -13,6 +13,7 @@
 #include "PlatformFeatures.h"
 #include "Engine/GameViewportClient.h"
 #include "Slate/SceneViewport.h"
+#include "HAL/IConsoleManager.h"
 
 DEFINE_LOG_CATEGORY(LogSpudSubsystem)
 
@@ -58,6 +59,8 @@ void USpudSubsystem::Deinitialize()
 {
 	Super::Deinitialize();
 	bIsTearingDown = true;
+	if (bAwaitingScreenshot) FScreenshotRequest::Reset();
+	ClearScreenshotCapture();
 	
 	FCoreUObjectDelegates::PostLoadMapWithWorld.Remove(OnPostLoadMapHandle);
 	FCoreUObjectDelegates::PreLoadMap.Remove(OnPreLoadMapHandle);
@@ -125,7 +128,7 @@ bool USpudSubsystem::ServerCheck(bool LogWarning) const
 
 void USpudSubsystem::EndGame()
 {
-	if (CurrentState == ESpudSystemState::SavingGameAsync)
+	if (IsSavingGame())
 	{
 		UE_LOG(LogSpudSubsystem, Log, TEXT("EndGame deferred until async save completes"));
 		PendingNewGameArgs.Reset();
@@ -478,7 +481,59 @@ void USpudSubsystem::SaveGame(const FString& SlotName, const FText& Title, bool 
 		SlotNameInProgress = SlotName;
 		TitleInProgress = Title;
 		ExtraInfoInProgress = ExtraInfo;
+		ScreenshotWorldInProgress = GetWorld();
+		if (ScreenshotWidth <= 0 || ScreenshotHeight <= 0)
+		{
+			UE_LOG(LogSpudSubsystem, Warning, TEXT("Invalid save screenshot dimensions; save cancelled"));
+			SaveComplete(SlotName, UserIndex, false);
+			return;
+		}
 
+#if ENGINE_MAJOR_VERSION > 5 || (ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 8)
+		// Standalone backbuffers are released at EndRenderFrame in UE 5.8. Read during the
+		// engine screenshot phase, while the viewport owns a valid render-thread target.
+		if (const auto Viewport = GEngine->GameViewport ? GEngine->GameViewport->GetGameViewport() : nullptr;
+			Viewport && Viewport->GetSizeXY().X > 0 && Viewport->GetSizeXY().Y > 0)
+		{
+			const auto DelegateSetting = IConsoleManager::Get().FindConsoleVariable(TEXT("r.ScreenshotDelegate"));
+			if (FScreenshotRequest::IsScreenshotRequested() || (DelegateSetting && DelegateSetting->GetInt() == 0))
+			{
+				UE_LOG(LogSpudSubsystem, Warning, TEXT("Screenshot capture is unavailable or already in use; save cancelled"));
+				SaveComplete(SlotName, UserIndex, false);
+				return;
+			}
+			bAwaitingScreenshot = true;
+			ScreenshotCaptureHandle = UGameViewportClient::OnScreenshotCaptured().AddWeakLambda(this,
+				[this, UserIndex](int32 Width, int32 Height, const TArray<FColor>& Pixels)
+				{
+					ClearScreenshotCapture();
+					TArray<FColor> Copy = Pixels;
+					OnScreenshotCaptured(Width, Height, MoveTemp(Copy), UserIndex);
+				});
+			HDRScreenshotCaptureHandle = UGameViewportClient::OnHDRScreenshotCaptured().AddWeakLambda(this,
+				[this, UserIndex](int32 Width, int32 Height, const TArray<FLinearColor>& HDRPixels)
+				{
+					ClearScreenshotCapture();
+					TArray<FColor> Pixels;
+					Pixels.Reserve(HDRPixels.Num());
+					for (const auto& Pixel : HDRPixels) Pixels.Add(Pixel.ToFColor(true));
+					OnScreenshotCaptured(Width, Height, MoveTemp(Pixels), UserIndex);
+				});
+			ScreenshotProcessedHandle = FScreenshotRequest::OnScreenshotRequestProcessed().AddWeakLambda(this,
+				[this, UserIndex] { if (bAwaitingScreenshot) ScreenshotCaptureFailed(UserIndex); });
+			ScreenshotTimeout = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateWeakLambda(this,
+				[this, UserIndex, Started = FPlatformTime::Seconds()](float)
+				{
+					if (!bAwaitingScreenshot) return false;
+					if (FPlatformTime::Seconds() - Started < 10.0) return true;
+					FScreenshotRequest::Reset();
+					ScreenshotCaptureFailed(UserIndex);
+					return false;
+				}), 0.1f);
+			FScreenshotRequest::RequestScreenshot(FString(), false, false, Viewport->GetSceneHDREnabled());
+			return;
+		}
+#else
 		if (const auto Viewport = GEngine->GameViewport ? GEngine->GameViewport->GetGameViewport() : nullptr)
 		{
 			if (const auto Size = Viewport->GetSizeXY(); Size.X > 0 && Size.Y > 0)
@@ -520,6 +575,13 @@ void USpudSubsystem::SaveGame(const FString& SlotName, const FText& Title, bool 
 			}
 		}
 
+#endif
+		if (bFailSaveIfScreenshotUnavailable)
+		{
+			UE_LOG(LogSpudSubsystem, Warning, TEXT("Failed to read viewport pixels for required save screenshot; save cancelled"));
+			SaveComplete(SlotName, UserIndex, false);
+			return;
+		}
 		UE_LOG(LogSpudSubsystem, Warning, TEXT("Failed to read viewport pixels for save screenshot, saving without thumbnail"));
 		FinishSaveGame(SlotName, UserIndex, Title, ExtraInfo, nullptr);
 	}
@@ -527,6 +589,29 @@ void USpudSubsystem::SaveGame(const FString& SlotName, const FText& Title, bool 
 	{
 		FinishSaveGame(SlotName, UserIndex, Title, ExtraInfo, nullptr);
 	}
+}
+
+void USpudSubsystem::ClearScreenshotCapture()
+{
+	bAwaitingScreenshot = false;
+	UGameViewportClient::OnScreenshotCaptured().Remove(ScreenshotCaptureHandle);
+#if ENGINE_MAJOR_VERSION > 5 || (ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 8)
+	UGameViewportClient::OnHDRScreenshotCaptured().Remove(HDRScreenshotCaptureHandle);
+#endif
+	FScreenshotRequest::OnScreenshotRequestProcessed().Remove(ScreenshotProcessedHandle);
+	FTSTicker::GetCoreTicker().RemoveTicker(ScreenshotTimeout);
+	ScreenshotCaptureHandle.Reset();
+	HDRScreenshotCaptureHandle.Reset();
+	ScreenshotProcessedHandle.Reset();
+	ScreenshotTimeout.Reset();
+}
+
+void USpudSubsystem::ScreenshotCaptureFailed(int32 UserIndex)
+{
+	ClearScreenshotCapture();
+	UE_LOG(LogSpudSubsystem, Warning, TEXT("Requested save screenshot was not captured"));
+	if (bFailSaveIfScreenshotUnavailable) SaveComplete(SlotNameInProgress, UserIndex, false);
+	else FinishSaveGame(SlotNameInProgress, UserIndex, TitleInProgress, ExtraInfoInProgress, nullptr);
 }
 
 void USpudSubsystem::OnScreenshotCaptured(int32 Width, int32 Height, TArray<FColor>&& Colours, const int32 UserIndex)
@@ -561,6 +646,27 @@ void USpudSubsystem::OnScreenshotCaptured(int32 Width, int32 Height, TArray<FCol
 
 void USpudSubsystem::FinishSaveGame(const FString& SlotName, const int32 UserIndex, const FText& Title, const USpudCustomSaveInfo* ExtraInfo, TArray<uint8>* ScreenshotData)
 {
+	if (bIsTearingDown) return;
+	if (!GetWorld() || (ScreenshotData && GetWorld() != ScreenshotWorldInProgress.Get()))
+	{
+		UE_LOG(LogSpudSubsystem, Warning, TEXT("Save cancelled because the screenshot world is no longer active"));
+		SaveComplete(SlotName, UserIndex, false);
+		return;
+	}
+	// Screenshot capture/encoding yields to the game thread. A blocker may have been added
+	// since SaveGame's initial guard (including by PreSaveGame listeners).
+	if (IsSaveBlocked())
+	{
+		UE_LOG(LogSpudSubsystem, Warning, TEXT("Save cancelled before snapshot: a save blocker became active during capture"));
+		SaveComplete(SlotName, UserIndex, false);
+		return;
+	}
+	if (bFailSaveIfScreenshotUnavailable && ScreenshotData && ScreenshotData->IsEmpty())
+	{
+		UE_LOG(LogSpudSubsystem, Warning, TEXT("Failed to encode required save screenshot; save cancelled"));
+		SaveComplete(SlotName, UserIndex, false);
+		return;
+	}
 	auto State = GetActiveState();
 	auto World = GetWorld();
 
@@ -725,6 +831,7 @@ void USpudSubsystem::SaveComplete(const FString& SlotName, const int32 UserIndex
 	SlotNameInProgress = "";
 	TitleInProgress = FText();
 	ExtraInfoInProgress = nullptr;
+	ScreenshotWorldInProgress.Reset();
 
 	if (PendingNewGameArgs.IsSet())
 	{
