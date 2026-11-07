@@ -281,6 +281,31 @@ void USpudState::ReleaseLevelData(const FString& LevelName, bool bBlocking)
 	SaveData.WriteAndReleaseLevelData(LevelName, GetActiveGameLevelFolder(), bBlocking);
 }
 
+bool USpudState::HasActorData(const AActor* Actor)
+{
+	if (!IsValid(Actor))
+		return false;
+
+	// AutoCreate=false: an absent level record means "nothing stored for this level", not "make one".
+	FSpudSaveData::TLevelDataPtr LevelData = GetLevelData(GetLevelNameForActor(Actor), false);
+	if (!LevelData.IsValid())
+		return false;
+	if (!LevelData->IsLoaded())
+		return true; // Paged out to disk: cannot answer safely, so let the caller wait.
+
+	FScopeLock LevelLock(&LevelData->Mutex);
+	if (SpudPropertyUtil::IsRuntimeActor(Actor))
+	{
+		const FGuid Guid = SpudPropertyUtil::GetGuidProperty(Actor);
+		// A runtime actor gets its SpudGuid written after SpawnActor returns, i.e. after BeginPlay.
+		// Unknown is not "absent": SPUD only respawns actors it has a record for.
+		if (!Guid.IsValid())
+			return true;
+		return LevelData->SpawnedActors.Contents.Contains(Guid.ToString(SPUDDATA_GUID_KEY_FORMAT));
+	}
+	return LevelData->LevelActors.Contents.Contains(SpudPropertyUtil::GetLevelActorName(Actor));
+}
+
 
 void USpudState::ReleaseAllLevelData()
 {

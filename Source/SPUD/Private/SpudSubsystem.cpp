@@ -1071,6 +1071,13 @@ void USpudSubsystem::LoadComplete(const FString& SlotName, const int32 UserIndex
 	WorldToLoad = nullptr;
 }
 
+bool USpudSubsystem::HasStoredStateForActor(const AActor* Actor)
+{
+	if (!IsValid(Actor) || !IsValid(ActiveState))
+		return false;
+	return ActiveState->HasActorData(Actor);
+}
+
 bool USpudSubsystem::DeleteSave(const FString& SlotName, const int32 UserIndex)
 {
 	if (!ServerCheck(true))

@@ -236,6 +236,18 @@ public:
 	/// Store actor by cell.
 	void StoreActor(AActor* Actor, const FString& CellName);
 
+	/** Read-only query: does this state hold a stored record for the actor?
+	 *
+	 *  Level actors are matched by their level-actor name, runtime-spawned actors by SpudGuid.
+	 *  A runtime actor whose SpudGuid is still blank is reported as stored: SPUD only respawns
+	 *  actors it has a record for, and the Guid is written after SpawnActor returns (i.e. after
+	 *  BeginPlay), so "unknown yet" must not be mistaken for "not in the save".
+	 *
+	 *  Intended for actors deciding in BeginPlay whether to defer their own default
+	 *  initialization until the snapshot arrives. May page in the level's data from disk.
+	 */
+	bool HasActorData(const AActor* Actor);
+
 	/// Notify the state that an actor that is part of a level is being destroyed, and that should be remembered
 	/// Will page in the level data concerned from disk if necessary and will retain it in memory
 	void StoreLevelActorDestroyed(AActor* Actor);

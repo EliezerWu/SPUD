@@ -330,6 +330,12 @@ public:
 	UFUNCTION(BlueprintPure, Category="SPUD")
     bool IsIdle() const { return CurrentState == ESpudSystemState::RunningIdle; }
 
+	/** Read-only: does the active game state hold a stored record for this actor?
+	 *  False when there is no active state at all (fresh session / new game). Thin wrapper over
+	 *  USpudState::HasActorData, meant for actors deciding in BeginPlay whether to defer their
+	 *  default initialization until the snapshot arrives. Never creates or mutates state. */
+	bool HasStoredStateForActor(const AActor* Actor);
+
 	/**
 	 * Register a reason to block all save operations. Nestable: each AddSaveBlocker(Reason) must be
 	 * balanced by a matching RemoveSaveBlocker(Reason). While any blocker is active, SaveGame() (and
