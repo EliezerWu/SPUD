@@ -673,7 +673,11 @@ AActor* USpudState::RespawnActor(const FSpudSpawnedActorData& SpawnedActor,
 
 	// Important to spawn using level's world, our GetWorld may not be valid it turns out
 	auto World = Level->GetWorld();
+	// Announce the expected respawn scope: listeners allow everything this call spawns synchronously
+	// (child actor components included) and report anything else created during a restore window.
+	OnRespawnActor.ExecuteIfBound(true);
 	AActor* Actor = World->SpawnActor<AActor>(Class, Params);
+	OnRespawnActor.ExecuteIfBound(false);
 	if (Actor)
 	{
 		if (!SpudPropertyUtil::SetGuidProperty(Actor, SpawnedActor.Guid))

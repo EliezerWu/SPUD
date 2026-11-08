@@ -24,6 +24,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FSpudOnLevelStore, const FString&, L
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FSpudPostLevelStore, const FString&, LevelName, bool, bSuccess);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FSpudPreLevelRestore, const FString&, LevelName);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FSpudPostLevelRestore, const FString&, LevelName, bool, bSuccess);
+DECLARE_MULTICAST_DELEGATE(FSpudRespawnActorScope);
 
 /// Helper delegates to allow blueprints to listen in on map transitions & streaming if they want
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FSpudPreTravelToNewMap, const FString&, NextMapName);
@@ -120,6 +121,10 @@ public:
 	/// Event fired just after we've finished populating a loaded level from the state database
 	UPROPERTY(BlueprintAssignable)
 	FSpudPostLevelRestore PostLevelRestore;
+	/// Event fired just before / after we SpawnActor one saved (runtime) actor while restoring.
+	/// Everything spawned synchronously inside that pair belongs to the save being restored.
+	FSpudRespawnActorScope PreRespawnActor;
+	FSpudRespawnActorScope PostRespawnActor;
 
 	/// Event fired just prior to travelling to a new map (convenience for blueprints mainly, who don't have access to FCoreDelegates)
 	UPROPERTY(BlueprintAssignable)
@@ -242,6 +247,10 @@ protected:
 			ActiveState = NewObject<USpudState>();
 			ActiveState->OnLevelStore.BindWeakLambda(this, [this](const auto& LevelName) {
 				OnLevelStore.Broadcast(LevelName);
+			});
+			ActiveState->OnRespawnActor.BindWeakLambda(this, [this](bool bBegin) {
+				if (bBegin) PreRespawnActor.Broadcast();
+				else PostRespawnActor.Broadcast();
 			});
 		}
 

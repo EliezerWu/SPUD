@@ -13,6 +13,11 @@ SPUD_API DECLARE_LOG_CATEGORY_EXTERN(LogSpudState, Verbose, Verbose);
 
 DECLARE_DELEGATE_OneParam(FSpudOnStateLevelStore, const FString&);
 
+/// Broadcast around the SpawnActor call that recreates one saved actor (true = entering, false = leaving).
+/// Everything spawned synchronously inside that scope (child actor components included) belongs to the save
+/// being restored, so listeners can allow it instead of reporting it as content created during a restore.
+DECLARE_DELEGATE_OneParam(FSpudOnRespawnActor, bool /* bBegin */);
+
 /// Description of a save game for display in load game lists, finding latest
 /// All properties are read-only because they can only be populated via calls to save game
 UCLASS(BlueprintType)
@@ -82,6 +87,7 @@ public:
 	FSpudSaveData SaveData;
 
 	FSpudOnStateLevelStore OnLevelStore;
+	FSpudOnRespawnActor OnRespawnActor;
 
 protected:
 
