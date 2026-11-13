@@ -17,7 +17,6 @@
 
 DEFINE_LOG_CATEGORY(LogSpudSubsystem)
 
-
 #define SPUD_QUICKSAVE_SLOTNAME TEXT("__QuickSave__")
 #define SPUD_AUTOSAVE_SLOTNAME TEXT("__AutoSave__")
 
@@ -506,28 +505,41 @@ void USpudSubsystem::SaveGame(const FString& SlotName, const FText& Title, bool 
 			ScreenshotCaptureHandle = UGameViewportClient::OnScreenshotCaptured().AddWeakLambda(this,
 				[this, UserIndex](int32 Width, int32 Height, const TArray<FColor>& Pixels)
 				{
-					ClearScreenshotCapture();
+					// Clearing removes this delegate and can destroy its closure immediately.
+					// Copy captures before removal; subsequent work must use stack locals only.
+					USpudSubsystem* const Owner = this;
+					const int32 CaptureUser = UserIndex;
+					Owner->ClearScreenshotCapture();
 					TArray<FColor> Copy = Pixels;
-					OnScreenshotCaptured(Width, Height, MoveTemp(Copy), UserIndex);
+					Owner->OnScreenshotCaptured(Width, Height, MoveTemp(Copy), CaptureUser);
 				});
 			HDRScreenshotCaptureHandle = UGameViewportClient::OnHDRScreenshotCaptured().AddWeakLambda(this,
 				[this, UserIndex](int32 Width, int32 Height, const TArray<FLinearColor>& HDRPixels)
 				{
-					ClearScreenshotCapture();
+					USpudSubsystem* const Owner = this;
+					const int32 CaptureUser = UserIndex;
+					Owner->ClearScreenshotCapture();
 					TArray<FColor> Pixels;
 					Pixels.Reserve(HDRPixels.Num());
 					for (const auto& Pixel : HDRPixels) Pixels.Add(Pixel.ToFColor(true));
-					OnScreenshotCaptured(Width, Height, MoveTemp(Pixels), UserIndex);
+					Owner->OnScreenshotCaptured(Width, Height, MoveTemp(Pixels), CaptureUser);
 				});
 			ScreenshotProcessedHandle = FScreenshotRequest::OnScreenshotRequestProcessed().AddWeakLambda(this,
-				[this, UserIndex] { if (bAwaitingScreenshot) ScreenshotCaptureFailed(UserIndex); });
+				[this, UserIndex]
+				{
+					USpudSubsystem* const Owner = this;
+					const int32 CaptureUser = UserIndex;
+					if (Owner->bAwaitingScreenshot) Owner->ScreenshotCaptureFailed(CaptureUser);
+				});
 			ScreenshotTimeout = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateWeakLambda(this,
 				[this, UserIndex, Started = FPlatformTime::Seconds()](float)
 				{
-					if (!bAwaitingScreenshot) return false;
+					USpudSubsystem* const Owner = this;
+					const int32 CaptureUser = UserIndex;
+					if (!Owner->bAwaitingScreenshot) return false;
 					if (FPlatformTime::Seconds() - Started < 10.0) return true;
 					FScreenshotRequest::Reset();
-					ScreenshotCaptureFailed(UserIndex);
+					Owner->ScreenshotCaptureFailed(CaptureUser);
 					return false;
 				}), 0.1f);
 			FScreenshotRequest::RequestScreenshot(FString(), false, false, Viewport->GetSceneHDREnabled());
